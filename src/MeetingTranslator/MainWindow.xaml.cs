@@ -24,7 +24,9 @@ public partial class MainWindow : Window
         TranscriptGrid.ItemsSource = _rows;
         CredentialsBox.Text = _settings.CredentialsPath;
         TranslationModeBox.SelectedIndex = _settings.TranslationMode == "GoogleCloud" ? 1 : 0;
-        UsageText.Text = $"{_usage.CharactersUsed:N0} / {_settings.MonthlyCharacterLimit:N0}자";
+        UsageText.Text = _settings.TranslationMode == "GoogleCloud"
+            ? $"{_usage.CharactersUsed:N0} / {_settings.MonthlyCharacterLimit:N0}자"
+            : "무료 비공식 모드 · 로컬 제한 없음";
         Loaded += async (_, _) => await _store.InitializeAsync();
     }
 
@@ -77,7 +79,8 @@ public partial class MainWindow : Window
         if (_translator is null || _meetingId is null || string.IsNullOrWhiteSpace(original)) return;
         try
         {
-            if (!_usage.TryConsume(original.Length, _settings.MonthlyCharacterLimit))
+            if (_settings.TranslationMode == "GoogleCloud" &&
+                !_usage.TryConsume(original.Length, _settings.MonthlyCharacterLimit))
             {
                 await Dispatcher.InvokeAsync(() =>
                     StatusText.Text = "월 49만 자 보호 한도 도달 — 번역 중지");
@@ -91,7 +94,9 @@ public partial class MainWindow : Window
                 _rows.Add(new(entry.Timestamp, "Live Captions", original, translated));
                 TranscriptGrid.ScrollIntoView(_rows.Last());
                 InterimText.Text = "";
-                UsageText.Text = $"{_usage.CharactersUsed:N0} / {_settings.MonthlyCharacterLimit:N0}자";
+                UsageText.Text = _settings.TranslationMode == "GoogleCloud"
+                    ? $"{_usage.CharactersUsed:N0} / {_settings.MonthlyCharacterLimit:N0}자"
+                    : "무료 비공식 모드 · 로컬 제한 없음";
             });
         }
         catch (Exception ex)
