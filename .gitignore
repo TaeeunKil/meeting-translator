@@ -1,0 +1,13 @@
+bin/
+obj/
+.vs/
+*.user
+*.suo
+credentials*.json
+service-account*.json
+appsettings.local.json
+exports/
+data/
+*.db
+*.db-shm
+*.db-wal
