@@ -1,67 +1,96 @@
 # Meeting Translator
 
-Windows에서 **시스템 소리(Teams·Zoom·브라우저)**와 **내 마이크**를 각각 캡처해
-Google Cloud Speech-to-Text로 실시간 전사하고, Cloud Translation으로 한국어 번역한 뒤
-로컬 SQLite에 저장하는 WPF 앱입니다. 회의 종료 시 Markdown과 CSV 회의록을 자동 생성합니다.
+Windows 11의 **실시간 캡션(Live Captions)**을 무료 로컬 음성 인식기로 사용하고,
+인식된 텍스트를 한국어로 번역해 회의별 SQLite·Markdown·CSV 기록으로 남기는 WPF 앱입니다.
+
+## 동작 방식
+
+```text
+Teams / Zoom / 브라우저 / 마이크
+              ↓
+Windows Live Captions (로컬 STT, 무료)
+              ↓ UI Automation
+Meeting Translator
+      ├─ Google 무료 번역(비공식)
+      └─ Google Cloud Translation(공식)
+              ↓
+     실시간 표시 + SQLite
+              ↓
+       Markdown + CSV
+```
+
+Google Speech-to-Text와 오디오 업로드는 사용하지 않습니다. Windows 실시간 캡션이 PC 소리를
+로컬에서 인식하므로 STT 사용료나 월 60분 제한이 없습니다.
 
 ## 주요 기능
 
-- WASAPI loopback 시스템 오디오 캡처
-- 기본 통신 마이크 캡처
-- 시스템 소리는 `상대방`, 마이크는 `나`로 구분
-- Google Cloud 실시간 스트리밍 전사와 중간 자막
-- 영어 원문 → 한국어 번역
-- 타임스탬프·원문·번역·신뢰도 로컬 SQLite 저장
-- 회의 종료 시 UTF-8 CSV와 Markdown 내보내기
-- 서비스 계정 파일과 로컬 데이터의 Git 제외
+- 실행 중인 Windows Live Captions에 안전하게 연결
+- Live Captions가 없으면 자동 실행
+- 사용자가 실행한 Live Captions 프로세스를 강제 종료하지 않음
+- 900ms 동안 문장이 변하지 않으면 확정 문장으로 처리
+- 두 가지 번역 모드
+  - 무료 Google 번역: 키·결제 불필요, 비공식 엔드포인트
+  - Google Cloud Translation: 공식 API와 서비스 계정 사용
+- 공식 API 모드는 로컬 사용량 490,000자에서 자동 번역 중단
+- 회의별 타임스탬프·원문·번역문 SQLite 저장
+- 회의 종료 시 UTF-8 CSV와 Markdown 자동 내보내기
 
 ## 요구 사항
 
-- Windows 10/11 x64
-- .NET 8 SDK(개발) 또는 .NET 8 Desktop Runtime(실행)
-- 결제가 연결된 Google Cloud 프로젝트
-- 활성화된 Speech-to-Text API와 Cloud Translation API
+- Windows 11 22H2 이상
+- .NET 8 Desktop Runtime
+- Windows 실시간 캡션 언어 팩
 
-> Google Cloud API는 사용량에 따라 비용이 발생합니다. 결제 계정 연결, API 활성화,
-> 할당량·예산 알림 설정은 본인이 Google Cloud Console에서 직접 확인하고 승인하세요.
+## 빠른 시작
 
-## Google Cloud 설정
+1. `Win + Ctrl + L`로 Windows 실시간 캡션을 켭니다.
+2. 캡션 언어를 상대방이 말하는 언어(예: English (United States))로 설정합니다.
+3. 내 목소리도 기록하려면 실시간 캡션 설정에서 `마이크 오디오 포함`을 켭니다.
+4. Meeting Translator에서 무료 Google 번역을 선택합니다.
+5. `회의 시작`을 누릅니다.
+6. 끝나면 `회의 종료`를 눌러 Markdown과 CSV를 저장합니다.
 
-1. [Google Cloud Console](https://console.cloud.google.com/)에서 프로젝트를 만들거나 선택합니다.
-2. 결제 계정을 연결합니다. 이 단계부터 API 사용량에 따라 비용이 청구될 수 있습니다.
-3. `Speech-to-Text API`와 `Cloud Translation API`를 활성화합니다.
-4. IAM 및 관리자 → 서비스 계정에서 전용 서비스 계정을 만듭니다.
-5. 최소 권한으로 `Cloud Speech Client`, `Cloud Translation API User` 역할을 부여합니다.
-6. JSON 키를 내려받아 저장소 **밖의 안전한 위치**에 보관합니다.
-7. 권장: 결제 → 예산 및 알림에서 월 예산 알림을 설정하고 API 할당량을 제한합니다.
-
-서비스 계정 JSON 파일은 비밀번호와 같은 비밀입니다. Git, 메신저, 화면 공유에 노출하지 마세요.
-노출되었다면 즉시 키를 폐기하고 새 키를 발급하세요.
-
-## 실행
-
-```powershell
-dotnet restore
-dotnet run --project src/MeetingTranslator/MeetingTranslator.csproj
-```
-
-앱에서 Google Cloud 프로젝트 ID와 서비스 계정 JSON 경로를 선택하고 `회의 시작`을 누릅니다.
-회의가 끝나면 `회의 종료`를 누르세요. 결과는 기본적으로 다음 폴더에 저장됩니다.
+결과 위치:
 
 ```text
 문서\MeetingTranslator\Exports
 ```
 
-설정과 SQLite DB는 `%LOCALAPPDATA%\MeetingTranslator`에만 저장됩니다.
+설정·DB·월간 사용량은 `%LOCALAPPDATA%\MeetingTranslator`에 저장됩니다.
 
-## 빌드와 테스트
+## 공식 Google Cloud Translation 사용
+
+공식 API를 선택할 때만 다음 설정이 필요합니다.
+
+1. Google Cloud 프로젝트를 선택합니다.
+2. 결제 계정을 연결합니다. API 사용량에 따라 비용이 발생할 수 있습니다.
+3. Cloud Translation API를 활성화합니다.
+4. 전용 서비스 계정을 만들고 Translation API 사용에 필요한 최소 권한을 부여합니다.
+5. JSON 키를 내려받아 저장소 밖의 안전한 위치에 보관합니다.
+6. 앱에서 JSON 파일을 선택하고 `Google Cloud 공식 API` 모드를 사용합니다.
+
+앱은 월 500,000자 무료 크레딧에 여유를 두고 **490,000자에서 번역을 중단**합니다.
+이는 이 앱의 로컬 사용량 기준이므로 같은 결제 계정·프로젝트를 쓰는 다른 프로그램의 사용량까지
+알 수는 없습니다. Google Cloud 예산 알림과 API 할당량도 함께 설정하세요.
+
+서비스 계정 JSON은 비밀번호와 같은 비밀입니다. Git·메신저·화면 공유로 노출하지 마세요.
+
+## 무료 Google 번역 모드 주의사항
+
+무료 모드는 Chrome Dictionary 확장 프로그램 계열의 비공식 Google 번역 엔드포인트를 사용합니다.
+API 키와 결제가 필요 없지만 Google이 앱용으로 안정성을 보장하지 않으며, 차단되거나 응답 형식이
+변경될 수 있습니다. 중요한 업무에는 공식 Cloud Translation 모드를 권장합니다.
+
+## 개발
 
 ```powershell
+dotnet restore
 dotnet build MeetingTranslator.sln -c Release
 dotnet test MeetingTranslator.sln -c Release
+dotnet run --project src/MeetingTranslator/MeetingTranslator.csproj
 ```
 
-배포 파일 만들기:
+독립 실행 파일:
 
 ```powershell
 dotnet publish src/MeetingTranslator/MeetingTranslator.csproj `
@@ -69,20 +98,25 @@ dotnet publish src/MeetingTranslator/MeetingTranslator.csproj `
   -p:PublishSingleFile=true
 ```
 
-## 개인정보 및 보안
+## 개인정보
 
-- 오디오는 전사를 위해 Google Cloud로 스트리밍되며, 전사 텍스트는 번역을 위해 Google Cloud에 전송됩니다.
-- 회의 참가자의 동의와 회사 보안 정책을 확인하세요.
-- 앱은 원문과 번역문을 로컬 SQLite에 저장합니다.
-- 서비스 계정 JSON 자체는 앱 설정에 경로만 저장되며 저장소에는 포함하지 않습니다.
-- 운영 환경에서는 서비스 계정 키 대신 Workload Identity Federation 등 키 없는 인증을 검토하세요.
+- 음성 인식은 Windows Live Captions가 로컬에서 수행합니다.
+- 번역 모드에서는 인식된 텍스트만 선택한 Google 번역 서비스로 전송됩니다.
+- 회의 참가자의 동의와 회사 정책을 확인하세요.
+- 회의 기록은 로컬 SQLite 및 내보낸 파일에 저장됩니다.
 
-## 현재 MVP 제한
+## 참고 프로젝트
 
-- 상대방 여러 명의 개별 화자 이름 분리는 하지 않습니다.
-- 시스템 기본 출력 장치와 기본 통신 마이크를 사용합니다.
-- 네트워크 또는 API 오류 시 잠시 후 스트리밍 세션을 다시 연결합니다.
-- Google API 자격 증명이 없으면 실제 전사·번역 통합 테스트는 실행할 수 없습니다.
+Windows Live Captions UI Automation 접근 방식과 번역 파이프라인을 설계할 때
+[SakiRinn/LiveCaptions-Translator](https://github.com/SakiRinn/LiveCaptions-Translator)를
+참고했습니다. 해당 프로젝트는 Apache License 2.0입니다. 이 저장소의 구현은 독립적으로 작성했으며
+참고 프로젝트의 소스 파일을 복사하지 않았습니다.
+
+## 제한
+
+- Live Captions의 비공개 UI 구조에 의존하므로 Windows 업데이트 후 조정이 필요할 수 있습니다.
+- Windows Live Captions 결과에는 안정적인 화자 이름이 포함되지 않습니다.
+- Teams 자체 전사 파일이나 Microsoft Graph와는 직접 연동하지 않습니다.
 
 ## 라이선스
 

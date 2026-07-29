@@ -12,8 +12,9 @@ public partial class MainWindow : Window
     private readonly ObservableCollection<Row> _rows = [];
     private readonly TranscriptStore _store = new();
     private AppSettings _settings = AppSettings.Load();
-    private AudioCaptureService? _capture;
-    private GoogleTranslationService? _translator;
+    private LiveCaptionsReader? _reader;
+    private ITranslationService? _translator;
+    private readonly MonthlyUsageGuard _usage = new();
     private CancellationTokenSource? _meetingCancellation;
     private string? _meetingId;
 
@@ -21,10 +22,9 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         TranscriptGrid.ItemsSource = _rows;
-        ProjectIdBox.Text = _settings.ProjectId;
         CredentialsBox.Text = _settings.CredentialsPath;
-        SystemAudioCheck.IsChecked = _settings.CaptureSystemAudio;
-        MicrophoneCheck.IsChecked = _settings.CaptureMicrophone;
+        TranslationModeBox.SelectedIndex = _settings.TranslationMode == "GoogleCloud" ? 1 : 0;
+        UsageText.Text = $"{_usage.CharactersUsed:N0} / {_settings.MonthlyCharacterLimit:N0}자";
         Loaded += async (_, _) => await _store.InitializeAsync();
     }
 
@@ -38,30 +38,32 @@ public partial class MainWindow : Window
     {
         try
         {
-            if (string.IsNullOrWhiteSpace(ProjectIdBox.Text) || !File.Exists(CredentialsBox.Text))
+            var selectedMode = ((System.Windows.Controls.ComboBoxItem)TranslationModeBox.SelectedItem).Tag?.ToString()
+                               ?? "UnofficialGoogle";
+            if (selectedMode == "GoogleCloud" && !File.Exists(CredentialsBox.Text))
             {
-                MessageBox.Show("Google Cloud 프로젝트 ID와 서비스 계정 JSON 파일을 설정해 주세요.",
+                MessageBox.Show("공식 Google Cloud 번역을 쓰려면 서비스 계정 JSON 파일을 설정해 주세요.",
                     "설정 필요", MessageBoxButton.OK, MessageBoxImage.Information);
                 return;
             }
 
-            _settings.ProjectId = ProjectIdBox.Text.Trim();
             _settings.CredentialsPath = CredentialsBox.Text.Trim();
-            _settings.CaptureSystemAudio = SystemAudioCheck.IsChecked == true;
-            _settings.CaptureMicrophone = MicrophoneCheck.IsChecked == true;
+            _settings.TranslationMode = selectedMode;
             _settings.Save();
-            Environment.SetEnvironmentVariable("GOOGLE_APPLICATION_CREDENTIALS", _settings.CredentialsPath);
+            if (selectedMode == "GoogleCloud")
+                Environment.SetEnvironmentVariable("GOOGLE_APPLICATION_CREDENTIALS", _settings.CredentialsPath);
 
             _meetingId = $"{DateTime.Now:yyyyMMdd-HHmmss}-{Guid.NewGuid():N}";
             _meetingCancellation = new();
-            _translator = new(_settings.ProjectId);
-            _capture = new();
-            _capture.InterimTranscript += (source, text) =>
-                Dispatcher.Invoke(() => InterimText.Text = $"{Label(source)}: {text}");
-            _capture.FinalTranscript += HandleFinalTranscriptAsync;
+            _translator = selectedMode == "GoogleCloud"
+                ? new CloudTranslationService()
+                : new UnofficialGoogleTranslationService();
+            _reader = new();
+            _reader.InterimCaption += text =>
+                Dispatcher.Invoke(() => InterimText.Text = text);
+            _reader.FinalCaption += HandleFinalCaptionAsync;
             _rows.Clear();
-            await _capture.StartAsync(_settings.CaptureSystemAudio, _settings.CaptureMicrophone,
-                _settings.SourceLanguage, _meetingCancellation.Token);
+            await _reader.StartAsync(_meetingCancellation.Token);
             ToggleMeeting(true);
         }
         catch (Exception ex)
@@ -70,19 +72,26 @@ public partial class MainWindow : Window
         }
     }
 
-    private async Task HandleFinalTranscriptAsync(AudioSource source, string original, double confidence)
+    private async Task HandleFinalCaptionAsync(string original)
     {
         if (_translator is null || _meetingId is null || string.IsNullOrWhiteSpace(original)) return;
         try
         {
+            if (!_usage.TryConsume(original.Length, _settings.MonthlyCharacterLimit))
+            {
+                await Dispatcher.InvokeAsync(() =>
+                    StatusText.Text = "월 49만 자 보호 한도 도달 — 번역 중지");
+                return;
+            }
             var translated = await _translator.TranslateAsync(original, _settings.TargetLanguage,
                 _settings.SourceLanguage);
-            var entry = await _store.AddAsync(_meetingId, source, original, translated, confidence);
+            var entry = await _store.AddAsync(_meetingId, AudioSource.LiveCaptions, original, translated, 1);
             await Dispatcher.InvokeAsync(() =>
             {
-                _rows.Add(new(entry.Timestamp, Label(source), original, translated));
+                _rows.Add(new(entry.Timestamp, "Live Captions", original, translated));
                 TranscriptGrid.ScrollIntoView(_rows.Last());
                 InterimText.Text = "";
+                UsageText.Text = $"{_usage.CharactersUsed:N0} / {_settings.MonthlyCharacterLimit:N0}자";
             });
         }
         catch (Exception ex)
@@ -95,7 +104,7 @@ public partial class MainWindow : Window
     {
         if (_meetingId is null) return;
         _meetingCancellation?.Cancel();
-        if (_capture is not null) await _capture.DisposeAsync();
+        _reader?.Dispose();
         var entries = await _store.GetMeetingAsync(_meetingId);
 
         var exportDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
@@ -115,12 +124,11 @@ public partial class MainWindow : Window
     {
         StartButton.IsEnabled = !running;
         StopButton.IsEnabled = running;
-        ProjectIdBox.IsEnabled = !running;
+        TranslationModeBox.IsEnabled = !running;
         CredentialsBox.IsEnabled = !running;
         BrowseButton.IsEnabled = !running;
         StatusText.Text = running ? "녹음·번역 중" : "저장 완료";
     }
 
-    private static string Label(AudioSource source) => source == AudioSource.Microphone ? "나" : "상대방";
     public sealed record Row(DateTimeOffset Timestamp, string SourceLabel, string OriginalText, string TranslatedText);
 }

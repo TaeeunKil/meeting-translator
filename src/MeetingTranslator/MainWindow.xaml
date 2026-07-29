@@ -24,15 +24,17 @@
     <Border Grid.Row="1" Margin="0,20,0,16" Padding="18" Background="#1E293B" CornerRadius="14">
       <Grid>
         <Grid.ColumnDefinitions>
-          <ColumnDefinition Width="*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/>
+          <ColumnDefinition Width="1.2*"/><ColumnDefinition Width="1.2*"/><ColumnDefinition Width="1*"/>
         </Grid.ColumnDefinitions>
         <StackPanel Margin="0,0,12,0">
-          <TextBlock Text="Google Cloud 프로젝트 ID" Foreground="#94A3B8"/>
-          <TextBox x:Name="ProjectIdBox" Margin="0,6,0,0" Padding="10" Background="#334155"
-                   Foreground="White" BorderThickness="0"/>
+          <TextBlock Text="번역 방식" Foreground="#94A3B8"/>
+          <ComboBox x:Name="TranslationModeBox" Margin="0,6,0,0" Padding="8">
+            <ComboBoxItem Tag="UnofficialGoogle" Content="무료 Google 번역 (비공식·키 불필요)"/>
+            <ComboBoxItem Tag="GoogleCloud" Content="Google Cloud 공식 API (월 49만 자 보호)"/>
+          </ComboBox>
         </StackPanel>
         <StackPanel Grid.Column="1" Margin="0,0,12,0">
-          <TextBlock Text="서비스 계정 JSON 파일" Foreground="#94A3B8"/>
+          <TextBlock Text="Google Cloud 서비스 계정 JSON (공식 API만)" Foreground="#94A3B8"/>
           <DockPanel Margin="0,6,0,0">
             <Button DockPanel.Dock="Right" x:Name="BrowseButton" Content="찾기" Click="BrowseCredentials_Click"
                     Padding="14,8" Margin="8,0,0,0"/>
@@ -41,8 +43,9 @@
           </DockPanel>
         </StackPanel>
         <StackPanel Grid.Column="2" VerticalAlignment="Bottom">
-          <CheckBox x:Name="SystemAudioCheck" Content="시스템 소리" IsChecked="True" Margin="0,0,0,6"/>
-          <CheckBox x:Name="MicrophoneCheck" Content="내 마이크" IsChecked="True"/>
+          <TextBlock Text="월간 사용량" Foreground="#94A3B8"/>
+          <TextBlock x:Name="UsageText" Text="0 / 490,000자" Margin="0,8,0,0"
+                     FontWeight="SemiBold" Foreground="#86EFAC"/>
         </StackPanel>
       </Grid>
     </Border>

@@ -1,6 +1,6 @@
 namespace MeetingTranslator.Models;
 
-public enum AudioSource { SystemAudio, Microphone }
+public enum AudioSource { LiveCaptions }
 
 public sealed record TranscriptEntry(
     long Id,

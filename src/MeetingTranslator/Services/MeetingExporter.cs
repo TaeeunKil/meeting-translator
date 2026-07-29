@@ -31,6 +31,6 @@ public static class MeetingExporter
         await File.WriteAllTextAsync(path, sb.ToString(), new UTF8Encoding(true));
     }
 
-    private static string Label(AudioSource source) => source == AudioSource.Microphone ? "나" : "상대방";
+    private static string Label(AudioSource source) => "Windows Live Captions";
     private static string Csv(string value) => $"\"{value.Replace("\"", "\"\"")}\"";
 }

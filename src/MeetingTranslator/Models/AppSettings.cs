@@ -8,8 +8,8 @@ public sealed class AppSettings
     public string CredentialsPath { get; set; } = "";
     public string SourceLanguage { get; set; } = "en-US";
     public string TargetLanguage { get; set; } = "ko";
-    public bool CaptureSystemAudio { get; set; } = true;
-    public bool CaptureMicrophone { get; set; } = true;
+    public string TranslationMode { get; set; } = "UnofficialGoogle";
+    public int MonthlyCharacterLimit { get; set; } = 490000;
 
     public static string DirectoryPath =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MeetingTranslator");

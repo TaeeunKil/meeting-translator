@@ -11,7 +11,7 @@ public class MeetingExporterTests
         var path = Path.GetTempFileName();
         var entries = new[] {
             new TranscriptEntry(1, "m", DateTimeOffset.Parse("2026-01-01T00:00:00Z"),
-                AudioSource.Microphone, "Hello, \"team\"", "안녕하세요", .95)
+                AudioSource.LiveCaptions, "Hello, \"team\"", "안녕하세요", .95)
         };
         await MeetingExporter.ExportCsvAsync(entries, path);
         var text = await File.ReadAllTextAsync(path);
@@ -24,7 +24,7 @@ public class MeetingExporterTests
     {
         var path = Path.GetTempFileName();
         var entries = new[] {
-            new TranscriptEntry(1, "m", DateTimeOffset.Now, AudioSource.SystemAudio,
+            new TranscriptEntry(1, "m", DateTimeOffset.Now, AudioSource.LiveCaptions,
                 "Ship Friday", "금요일 배포", .9)
         };
         await MeetingExporter.ExportMarkdownAsync(entries, path, "테스트 회의");
