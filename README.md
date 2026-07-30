@@ -1,58 +1,62 @@
 # Meeting Translator
 
-Windows에서 **시스템 소리(Teams·Zoom·브라우저)**와 **내 마이크**를 각각 캡처해
-Google Cloud Speech-to-Text로 실시간 전사하고, Cloud Translation으로 한국어 번역한 뒤
-로컬 SQLite에 저장하는 WPF 앱입니다. 회의 종료 시 Markdown과 CSV 회의록을 자동 생성합니다.
+Windows 11 또는 Microsoft Teams의 **라이브 캡션**을 읽어 영어 원문을 한국어로 번역하고, 대화형 회의록으로 쌓는 WPF 앱입니다. 별도 Speech-to-Text API 없이 동작하며, 회의 종료 시 Markdown과 CSV를 생성합니다.
 
-## 주요 기능
+## 캡션 소스
 
-- WASAPI loopback 시스템 오디오 캡처
-- 기본 통신 마이크 캡처
-- 시스템 소리는 `상대방`, 마이크는 `나`로 구분
-- Google Cloud 실시간 스트리밍 전사와 중간 자막
-- 영어 원문 → 한국어 번역
-- 타임스탬프·원문·번역·신뢰도 로컬 SQLite 저장
-- 회의 종료 시 UTF-8 CSV와 Markdown 내보내기
-- 서비스 계정 파일과 로컬 데이터의 Git 제외
+- **Windows 자막 (기본값)**: Teams, Zoom, 브라우저 등 PC에서 재생되는 모든 소리를 Windows 11 라이브 캡션으로 인식합니다. 범용이지만 화자 이름은 구분하지 않습니다.
+- **Teams 자막**: Teams 회의의 라이브 캡션 영역을 직접 읽습니다. 화면에 화자 이름이 표시되면 이름과 발언을 함께 저장합니다. Teams 업데이트에 따른 화면 구조 변경의 영향을 받을 수 있습니다.
+
+## 번역 엔진
+
+- **무료 Google (기본값)**: API 키 없이 바로 사용합니다. 비공식 엔드포인트이므로 개인용·실험용에 적합하며 Google의 제공 방식이 바뀌면 중단될 수 있습니다.
+- **Google Cloud Translation**: 공식 API입니다. Google Cloud 프로젝트와 서비스 계정 JSON이 필요하며 사용량에 따라 비용이 발생할 수 있습니다.
+- **사내 Qwen**: OpenAI 호환 API를 사용합니다. 기본값은 `http://172.30.1.57:8400/v1`, 모델은 `qwen3.5-27b`입니다. 사고 모드는 끄며, 연결 실패 시 무료 Google로 대체할 수 있습니다.
 
 ## 요구 사항
 
-- Windows 10/11 x64
+- Windows 11 x64와 Windows 라이브 캡션 또는 Microsoft Teams 데스크톱 앱
 - .NET 8 SDK(개발) 또는 .NET 8 Desktop Runtime(실행)
-- 결제가 연결된 Google Cloud 프로젝트
-- 활성화된 Speech-to-Text API와 Cloud Translation API
-
-> Google Cloud API는 사용량에 따라 비용이 발생합니다. 결제 계정 연결, API 활성화,
-> 할당량·예산 알림 설정은 본인이 Google Cloud Console에서 직접 확인하고 승인하세요.
-
-## Google Cloud 설정
-
-1. [Google Cloud Console](https://console.cloud.google.com/)에서 프로젝트를 만들거나 선택합니다.
-2. 결제 계정을 연결합니다. 이 단계부터 API 사용량에 따라 비용이 청구될 수 있습니다.
-3. `Speech-to-Text API`와 `Cloud Translation API`를 활성화합니다.
-4. IAM 및 관리자 → 서비스 계정에서 전용 서비스 계정을 만듭니다.
-5. 최소 권한으로 `Cloud Speech Client`, `Cloud Translation API User` 역할을 부여합니다.
-6. JSON 키를 내려받아 저장소 **밖의 안전한 위치**에 보관합니다.
-7. 권장: 결제 → 예산 및 알림에서 월 예산 알림을 설정하고 API 할당량을 제한합니다.
-
-서비스 계정 JSON 파일은 비밀번호와 같은 비밀입니다. Git, 메신저, 화면 공유에 노출하지 마세요.
-노출되었다면 즉시 키를 폐기하고 새 키를 발급하세요.
+- 인터넷 연결(무료 Google 또는 Google Cloud 사용 시)
+- 사내망 연결(Qwen 사용 시)
 
 ## 실행
 
+PowerShell에서 다음을 실행합니다.
+
 ```powershell
+cd C:\Users\user\Documents\Codex\2026-07-30\github\meeting-translator
 dotnet restore
-dotnet run --project src/MeetingTranslator/MeetingTranslator.csproj
+dotnet run --project src\MeetingTranslator\MeetingTranslator.csproj
 ```
 
-앱에서 Google Cloud 프로젝트 ID와 서비스 계정 JSON 경로를 선택하고 `회의 시작`을 누릅니다.
-회의가 끝나면 `회의 종료`를 누르세요. 결과는 기본적으로 다음 폴더에 저장됩니다.
+앱이 열리면:
+
+1. 왼쪽 위에서 `Windows 자막` 또는 `Teams 자막`을 선택합니다.
+2. 그 아래에서 번역 엔진을 선택합니다. 처음에는 `무료 Google`이 선택되어 있습니다.
+3. Windows 자막은 자막 언어를 영어로 설정합니다.
+4. Teams 자막은 회의에서 라이브 캡션을 켜고 가능하면 캡션을 별도 창으로 팝아웃합니다.
+5. `회의 시작`을 누르고, 종료할 때 `회의 종료`를 누릅니다.
+
+결과는 다음 위치에 저장됩니다.
 
 ```text
 문서\MeetingTranslator\Exports
 ```
 
-설정과 SQLite DB는 `%LOCALAPPDATA%\MeetingTranslator`에만 저장됩니다.
+설정과 SQLite DB는 `%LOCALAPPDATA%\MeetingTranslator`에 저장됩니다.
+
+## 선택 사항: Google Cloud Translation
+
+Google Cloud를 사용할 때만 다음 설정이 필요합니다.
+
+1. Google Cloud Console에서 프로젝트를 만들거나 선택합니다.
+2. 결제 계정을 연결하고 `Cloud Translation API`를 활성화합니다.
+3. 번역 전용 서비스 계정을 만들고 필요한 최소 역할만 부여합니다.
+4. JSON 키를 저장소 밖의 안전한 위치에 내려받습니다.
+5. 앱에서 프로젝트 ID와 JSON 파일을 선택합니다.
+
+서비스 계정 JSON은 비밀번호와 같은 비밀입니다. 비공개 저장소에도 커밋하지 마세요. 앱은 파일 자체가 아니라 경로만 로컬 설정에 저장합니다.
 
 ## 빌드와 테스트
 
@@ -61,28 +65,14 @@ dotnet build MeetingTranslator.sln -c Release
 dotnet test MeetingTranslator.sln -c Release
 ```
 
-배포 파일 만들기:
+## 개인정보 및 제한
 
-```powershell
-dotnet publish src/MeetingTranslator/MeetingTranslator.csproj `
-  -c Release -r win-x64 --self-contained true `
-  -p:PublishSingleFile=true
-```
-
-## 개인정보 및 보안
-
-- 오디오는 전사를 위해 Google Cloud로 스트리밍되며, 전사 텍스트는 번역을 위해 Google Cloud에 전송됩니다.
-- 회의 참가자의 동의와 회사 보안 정책을 확인하세요.
-- 앱은 원문과 번역문을 로컬 SQLite에 저장합니다.
-- 서비스 계정 JSON 자체는 앱 설정에 경로만 저장되며 저장소에는 포함하지 않습니다.
-- 운영 환경에서는 서비스 계정 키 대신 Workload Identity Federation 등 키 없는 인증을 검토하세요.
-
-## 현재 MVP 제한
-
-- 상대방 여러 명의 개별 화자 이름 분리는 하지 않습니다.
-- 시스템 기본 출력 장치와 기본 통신 마이크를 사용합니다.
-- 네트워크 또는 API 오류 시 잠시 후 스트리밍 세션을 다시 연결합니다.
-- Google API 자격 증명이 없으면 실제 전사·번역 통합 테스트는 실행할 수 없습니다.
+- 무료 Google 또는 Google Cloud를 선택하면 자막 텍스트가 해당 서비스로 전송됩니다.
+- Qwen을 선택하면 자막 텍스트가 설정된 사내 서버로 전송됩니다.
+- Windows 라이브 캡션의 인식은 로컬에서 처리되지만, 회의 참가자 동의와 회사 정책을 확인해야 합니다.
+- Windows 자막 소스는 개별 화자 구분을 지원하지 않습니다.
+- Teams 자막 소스는 화면에 표시된 화자 이름을 읽습니다. 참가자가 이름 표시를 끄거나 Teams의 접근성 구조가 바뀌면 이름을 가져오지 못할 수 있습니다.
+- 앱은 화자, 원문과 번역문을 로컬 SQLite에 저장합니다.
 
 ## 라이선스
 

@@ -9,4 +9,5 @@ public sealed record TranscriptEntry(
     AudioSource Source,
     string OriginalText,
     string TranslatedText,
-    double Confidence);
+    double Confidence,
+    string? SpeakerName = null);
