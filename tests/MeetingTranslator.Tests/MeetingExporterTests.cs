@@ -25,12 +25,13 @@ public class MeetingExporterTests
         var path = Path.GetTempFileName();
         var entries = new[] {
             new TranscriptEntry(1, "m", DateTimeOffset.Now, AudioSource.SystemAudio,
-                "Ship Friday", "금요일 배포", .9)
+                "Ship Friday", "금요일 배포", .9, "Alex")
         };
         await MeetingExporter.ExportMarkdownAsync(entries, path, "테스트 회의");
         var text = await File.ReadAllTextAsync(path);
         Assert.Contains("Ship Friday", text);
         Assert.Contains("금요일 배포", text);
+        Assert.Contains("Alex", text);
         File.Delete(path);
     }
 }

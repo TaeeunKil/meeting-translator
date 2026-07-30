@@ -8,9 +8,8 @@
     <AssemblyName>MeetingTranslator</AssemblyName>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="Google.Cloud.Speech.V1" Version="3.9.0" />
     <PackageReference Include="Google.Cloud.Translation.V2" Version="3.5.0" />
+    <PackageReference Include="Interop.UIAutomationClient" Version="10.19041.0" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.11" />
-    <PackageReference Include="NAudio" Version="2.2.1" />
   </ItemGroup>
 </Project>
