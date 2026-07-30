@@ -211,8 +211,8 @@
       <Grid Margin="24">
         <Grid.RowDefinitions>
           <RowDefinition Height="Auto"/>
-          <RowDefinition Height="Auto"/>
           <RowDefinition Height="*"/>
+          <RowDefinition Height="0"/>
           <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
@@ -244,7 +244,11 @@
                      TextWrapping="Wrap"/>
         </StackPanel>
 
-        <StackPanel Grid.Row="1" Margin="0,28,0,0">
+        <ScrollViewer Grid.Row="1"
+                      Margin="0,28,0,18"
+                      VerticalScrollBarVisibility="Auto"
+                      HorizontalScrollBarVisibility="Disabled">
+        <StackPanel Margin="0,0,6,0">
           <TextBlock Text="캡션 소스" FontSize="14" FontWeight="SemiBold"/>
           <Grid Margin="0,12,0,0">
             <Grid.ColumnDefinitions>
@@ -322,8 +326,36 @@
                 <TextBlock Text="Google Cloud Translation"
                            FontSize="12"
                            FontWeight="SemiBold"/>
+                <Grid Margin="0,11,0,0">
+                  <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                  </Grid.ColumnDefinitions>
+                  <TextBlock Text="이번 달 앱 사용량"
+                             Style="{StaticResource SectionLabel}"/>
+                  <TextBlock x:Name="CloudUsageText"
+                             Grid.Column="1"
+                             Text="0 / 490,000자"
+                             Foreground="#626260"
+                             FontSize="10"
+                             FontWeight="SemiBold"/>
+                </Grid>
+                <ProgressBar x:Name="CloudUsageBar"
+                             Height="5"
+                             Margin="0,7,0,0"
+                             Minimum="0"
+                             Maximum="490000"
+                             Foreground="{StaticResource AccentBrush}"
+                             Background="#DEDAD4"
+                             BorderThickness="0"/>
+                <TextBlock Text="490,000자에서 API 호출을 차단합니다. 다른 앱의 사용량은 포함되지 않습니다."
+                           Margin="0,7,0,0"
+                           Foreground="#7B7B78"
+                           FontSize="9"
+                           TextWrapping="Wrap"
+                           LineHeight="13"/>
                 <TextBlock Text="프로젝트 ID"
-                           Margin="0,13,0,0"
+                           Margin="0,12,0,0"
                            Style="{StaticResource SectionLabel}"/>
                 <TextBox x:Name="ProjectIdBox" Margin="0,6,0,0"/>
                 <TextBlock Text="서비스 계정 JSON"
@@ -362,6 +394,7 @@
                      Foreground="#7B7B78"
                      FontSize="10"/>
         </StackPanel>
+        </ScrollViewer>
 
         <StackPanel Grid.Row="3">
           <Border Padding="14"

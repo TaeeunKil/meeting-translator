@@ -15,6 +15,7 @@ public partial class MainWindow : Window
     private readonly ObservableCollection<Row> _rows = [];
     private readonly TranscriptStore _store = new();
     private readonly AppSettings _settings = AppSettings.Load();
+    private readonly MonthlyUsageGuard _usage = new();
     private ICaptionCaptureService? _capture;
     private ITranslationService? _translator;
     private CancellationTokenSource? _meetingCancellation;
@@ -30,6 +31,9 @@ public partial class MainWindow : Window
         QwenBaseUrlBox.Text = _settings.QwenBaseUrl;
         QwenModelBox.Text = _settings.QwenModel;
         QwenFallbackCheck.IsChecked = _settings.QwenFallbackToFreeGoogle;
+        if (_settings.MonthlyCharacterLimit is <= 0 or > 500_000)
+            _settings.MonthlyCharacterLimit = 490_000;
+        UpdateCloudUsage();
         SelectCaptionSource(_settings.CaptionSource, save: false);
         SelectProvider(_settings.TranslationProvider, save: false);
 
@@ -119,7 +123,7 @@ public partial class MainWindow : Window
         ProviderHintText.Text = provider switch
         {
             TranslationProviderKind.FreeGoogle => "기본 엔진 · API 키 없음 · 실험용",
-            TranslationProviderKind.GoogleCloud => "공식 API · 월 무료 한도 · 서비스 계정 필요",
+            TranslationProviderKind.GoogleCloud => "공식 API · 490,000자 로컬 보호 · 서비스 계정 필요",
             TranslationProviderKind.Qwen => "172.30.1.57 · qwen3.5-27b · 사고 모드 끔",
             _ => string.Empty
         };
@@ -245,13 +249,31 @@ public partial class MainWindow : Window
             string.IsNullOrWhiteSpace(caption.Text))
             return;
 
+        var reservedCharacters = 0;
+        var translationCompleted = false;
+
         try
         {
+            if (_settings.TranslationProvider == TranslationProviderKind.GoogleCloud)
+            {
+                reservedCharacters = MonthlyUsageGuard.CountBillableCharacters(caption.Text);
+                if (!_usage.TryReserve(
+                        reservedCharacters,
+                        _settings.MonthlyCharacterLimit))
+                {
+                    await ShowCloudLimitReachedAsync();
+                    return;
+                }
+
+                await Dispatcher.InvokeAsync(UpdateCloudUsage);
+            }
+
             var translated = await _translator.TranslateAsync(
                 caption.Text,
                 _settings.TargetLanguage,
                 _settings.SourceLanguage,
                 _meetingCancellation?.Token ?? CancellationToken.None);
+            translationCompleted = true;
             var entry = await _store.AddAsync(
                 _meetingId,
                 AudioSource.SystemAudio,
@@ -282,11 +304,17 @@ public partial class MainWindow : Window
         }
         catch (OperationCanceledException)
         {
+            if (!translationCompleted && reservedCharacters > 0)
+                _usage.Release(reservedCharacters);
         }
         catch (Exception ex)
         {
+            if (!translationCompleted && reservedCharacters > 0)
+                _usage.Release(reservedCharacters);
+
             await Dispatcher.InvokeAsync(() =>
             {
+                UpdateCloudUsage();
                 StatusText.Text = "번역 오류";
                 HeaderStatusText.Text = "오류";
                 StatusDot.Fill = Brush("#C41C1C");
@@ -295,6 +323,30 @@ public partial class MainWindow : Window
                 InterimText.Text = ex.Message;
             });
         }
+    }
+
+    private async Task ShowCloudLimitReachedAsync()
+    {
+        await Dispatcher.InvokeAsync(() =>
+        {
+            UpdateCloudUsage();
+            StatusText.Text = "Cloud 보호 한도 도달";
+            HeaderStatusText.Text = "호출 차단";
+            StatusDot.Fill = Brush("#C41C1C");
+            LiveDot.Fill = Brush("#C41C1C");
+            StatusBadge.Background = Brush("#FBE9E7");
+            InterimText.Text =
+                $"이번 달 앱 사용량이 {_settings.MonthlyCharacterLimit:N0}자 보호 한도에 도달해 Google Cloud 호출을 중단했습니다.";
+        });
+    }
+
+    private void UpdateCloudUsage()
+    {
+        var used = _usage.CharactersUsed;
+        var limit = _settings.MonthlyCharacterLimit;
+        CloudUsageText.Text = $"{used:N0} / {limit:N0}자";
+        CloudUsageBar.Maximum = limit;
+        CloudUsageBar.Value = Math.Min(used, limit);
     }
 
     private async void Stop_Click(object sender, RoutedEventArgs e)

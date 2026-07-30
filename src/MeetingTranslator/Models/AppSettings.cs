@@ -13,6 +13,7 @@ public sealed class AppSettings
     public string QwenBaseUrl { get; set; } = "http://172.30.1.57:8400/v1";
     public string QwenModel { get; set; } = "qwen3.5-27b";
     public bool QwenFallbackToFreeGoogle { get; set; } = true;
+    public int MonthlyCharacterLimit { get; set; } = 490_000;
 
     public static string DirectoryPath =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MeetingTranslator");
