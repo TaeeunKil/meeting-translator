@@ -10,10 +10,9 @@ public sealed partial class WindowsLiveCaptionsService : ICaptionCaptureService
 {
     private const string ProcessName = "LiveCaptions";
     private const string CaptionsAutomationId = "CaptionsTextBlock";
-    private static readonly TimeSpan StableDelay = TimeSpan.FromMilliseconds(700);
 
-    private readonly Channel<string> _finalizedCaptions =
-        Channel.CreateUnbounded<string>(new UnboundedChannelOptions
+    private readonly Channel<CaptionSegment> _finalizedCaptions =
+        Channel.CreateUnbounded<CaptionSegment>(new UnboundedChannelOptions
         {
             SingleReader = true,
             SingleWriter = true
@@ -24,6 +23,8 @@ public sealed partial class WindowsLiveCaptionsService : ICaptionCaptureService
     private Task? _processingTask;
     private AutomationElement? _window;
     private AutomationElement? _captionsTextBlock;
+    private CaptionSegment? _pendingCaption;
+    private long _nextUtteranceId = 1;
 
     public event Func<CaptionSegment, Task>? FinalTranscript;
     public event Action<CaptionSegment>? InterimTranscript;
@@ -33,7 +34,7 @@ public sealed partial class WindowsLiveCaptionsService : ICaptionCaptureService
         _cancellation = CancellationTokenSource.CreateLinkedTokenSource(token);
         _window = await FindOrLaunchWindowAsync(_cancellation.Token);
         _pollingTask = Task.Run(() => PollAsync(_cancellation.Token), _cancellation.Token);
-        _processingTask = Task.Run(() => ProcessFinalizedAsync(_cancellation.Token), _cancellation.Token);
+        _processingTask = Task.Run(ProcessFinalizedAsync);
     }
 
     public static void ShowLiveCaptions()
@@ -47,9 +48,6 @@ public sealed partial class WindowsLiveCaptionsService : ICaptionCaptureService
     private async Task PollAsync(CancellationToken token)
     {
         var lastRawText = string.Empty;
-        var pendingCaption = string.Empty;
-        var lastCommittedCaption = string.Empty;
-        var changedAt = DateTimeOffset.UtcNow;
 
         while (!token.IsCancellationRequested)
         {
@@ -75,41 +73,52 @@ public sealed partial class WindowsLiveCaptionsService : ICaptionCaptureService
             if (!string.Equals(fullText, lastRawText, StringComparison.Ordinal))
             {
                 lastRawText = fullText;
-                changedAt = DateTimeOffset.UtcNow;
-                pendingCaption = ExtractLatestCaption(fullText);
-
-                if (!string.IsNullOrWhiteSpace(pendingCaption) &&
-                    !string.Equals(pendingCaption, lastCommittedCaption, StringComparison.Ordinal))
-                {
-                    InterimTranscript?.Invoke(new CaptionSegment(pendingCaption));
-
-                    if (EndsSentence(pendingCaption))
-                    {
-                        _finalizedCaptions.Writer.TryWrite(pendingCaption);
-                        lastCommittedCaption = pendingCaption;
-                        pendingCaption = string.Empty;
-                    }
-                }
-            }
-            else if (!string.IsNullOrWhiteSpace(pendingCaption) &&
-                     !string.Equals(pendingCaption, lastCommittedCaption, StringComparison.Ordinal) &&
-                     DateTimeOffset.UtcNow - changedAt >= StableDelay)
-            {
-                _finalizedCaptions.Writer.TryWrite(pendingCaption);
-                lastCommittedCaption = pendingCaption;
-                pendingCaption = string.Empty;
+                var latestCaption = ExtractLatestCaption(fullText);
+                if (!string.IsNullOrWhiteSpace(latestCaption))
+                    ProcessCaptionUpdate(latestCaption);
             }
 
             await Task.Delay(40, token);
         }
     }
 
-    private async Task ProcessFinalizedAsync(CancellationToken token)
+    private void ProcessCaptionUpdate(string latestCaption)
     {
-        await foreach (var text in _finalizedCaptions.Reader.ReadAllAsync(token))
+        if (_pendingCaption is null)
+        {
+            _pendingCaption = NewSegment(latestCaption);
+        }
+        else if (IsContinuation(_pendingCaption.Text, latestCaption))
+        {
+            _pendingCaption = _pendingCaption with { Text = latestCaption };
+        }
+        else
+        {
+            QueueFinal(_pendingCaption);
+            _pendingCaption = NewSegment(latestCaption);
+        }
+
+        InterimTranscript?.Invoke(_pendingCaption);
+
+        if (EndsSentence(_pendingCaption.Text))
+        {
+            QueueFinal(_pendingCaption);
+            _pendingCaption = null;
+        }
+    }
+
+    private CaptionSegment NewSegment(string text) =>
+        new(text, UtteranceId: _nextUtteranceId++);
+
+    private void QueueFinal(CaptionSegment segment) =>
+        _finalizedCaptions.Writer.TryWrite(segment);
+
+    private async Task ProcessFinalizedAsync()
+    {
+        await foreach (var segment in _finalizedCaptions.Reader.ReadAllAsync())
         {
             if (FinalTranscript is not null)
-                await FinalTranscript(new CaptionSegment(text));
+                await FinalTranscript(segment);
         }
     }
 
@@ -177,24 +186,54 @@ public sealed partial class WindowsLiveCaptionsService : ICaptionCaptureService
     private static bool EndsSentence(string text) =>
         text.Length > 0 && ".!?。！？".Contains(text[^1]);
 
+    internal static bool IsContinuation(string previous, string current)
+    {
+        if (string.IsNullOrWhiteSpace(previous) || string.IsNullOrWhiteSpace(current))
+            return false;
+
+        var minLength = Math.Min(previous.Length, current.Length);
+        var previousPrefix = previous[..minLength];
+        var currentPrefix = current[..minLength];
+
+        if (string.Equals(previousPrefix, currentPrefix, StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        var matching = 0;
+        for (var index = 0; index < minLength; index++)
+        {
+            if (char.ToUpperInvariant(previousPrefix[index]) ==
+                char.ToUpperInvariant(currentPrefix[index]))
+                matching++;
+        }
+
+        return minLength >= 5 && (double)matching / minLength >= 0.6;
+    }
+
     public async ValueTask DisposeAsync()
     {
         if (_cancellation is null)
             return;
 
         _cancellation.Cancel();
-        _finalizedCaptions.Writer.TryComplete();
 
-        var tasks = new[] { _pollingTask, _processingTask }
-            .Where(task => task is not null)
-            .Cast<Task>();
         try
         {
-            await Task.WhenAll(tasks);
+            if (_pollingTask is not null)
+                await _pollingTask;
         }
         catch (OperationCanceledException)
         {
         }
+
+        if (_pendingCaption is not null)
+        {
+            QueueFinal(_pendingCaption);
+            _pendingCaption = null;
+        }
+
+        _finalizedCaptions.Writer.TryComplete();
+        if (_processingTask is not null)
+            await _processingTask;
 
         _cancellation.Dispose();
         _cancellation = null;

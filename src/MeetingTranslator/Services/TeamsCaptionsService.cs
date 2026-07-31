@@ -14,8 +14,6 @@ public sealed partial class TeamsCaptionsService : ICaptionCaptureService
         "caption", "closed-caption", "closedcaption", "subtitle",
         "live-caption", "transcript", "캡션", "자막"
     ];
-    private static readonly TimeSpan StableDelay = TimeSpan.FromMilliseconds(850);
-
     private readonly Channel<CaptionSegment> _finalizedCaptions =
         Channel.CreateUnbounded<CaptionSegment>(new UnboundedChannelOptions
         {
@@ -27,6 +25,8 @@ public sealed partial class TeamsCaptionsService : ICaptionCaptureService
     private Task? _pollingTask;
     private Task? _processingTask;
     private AutomationElement? _captionRoot;
+    private CaptionSegment? _pendingCaption;
+    private long _nextUtteranceId = 1;
 
     public event Func<CaptionSegment, Task>? FinalTranscript;
     public event Action<CaptionSegment>? InterimTranscript;
@@ -36,7 +36,7 @@ public sealed partial class TeamsCaptionsService : ICaptionCaptureService
         _cancellation = CancellationTokenSource.CreateLinkedTokenSource(token);
         _captionRoot = await FindCaptionRootAsync(_cancellation.Token);
         _pollingTask = Task.Run(() => PollAsync(_cancellation.Token), _cancellation.Token);
-        _processingTask = Task.Run(() => ProcessFinalizedAsync(_cancellation.Token), _cancellation.Token);
+        _processingTask = Task.Run(ProcessFinalizedAsync);
     }
 
     public static void ShowTeams()
@@ -50,9 +50,7 @@ public sealed partial class TeamsCaptionsService : ICaptionCaptureService
     private async Task PollAsync(CancellationToken token)
     {
         var lastSnapshot = string.Empty;
-        CaptionSegment? pending = null;
         var lastCommittedKey = string.Empty;
-        var changedAt = DateTimeOffset.UtcNow;
         var emptyReads = 0;
 
         while (!token.IsCancellationRequested)
@@ -87,46 +85,50 @@ public sealed partial class TeamsCaptionsService : ICaptionCaptureService
             var currentKey = SegmentKey(current);
             if (!string.Equals(snapshot, lastSnapshot, StringComparison.Ordinal))
             {
-                if (pending is not null &&
-                    !string.Equals(pending.SpeakerName, current.SpeakerName, StringComparison.Ordinal) &&
-                    !string.Equals(SegmentKey(pending), lastCommittedKey, StringComparison.Ordinal))
+                if (_pendingCaption is not null &&
+                    (!string.Equals(
+                         _pendingCaption.SpeakerName,
+                         current.SpeakerName,
+                         StringComparison.Ordinal) ||
+                     !WindowsLiveCaptionsService.IsContinuation(
+                         _pendingCaption.Text,
+                         current.Text)) &&
+                    !string.Equals(
+                        SegmentKey(_pendingCaption),
+                        lastCommittedKey,
+                        StringComparison.Ordinal))
                 {
-                    _finalizedCaptions.Writer.TryWrite(pending);
-                    lastCommittedKey = SegmentKey(pending);
+                    _finalizedCaptions.Writer.TryWrite(_pendingCaption);
+                    lastCommittedKey = SegmentKey(_pendingCaption);
+                    _pendingCaption = null;
                 }
 
                 lastSnapshot = snapshot;
-                changedAt = DateTimeOffset.UtcNow;
-                pending = current;
 
                 if (!string.Equals(currentKey, lastCommittedKey, StringComparison.Ordinal))
                 {
-                    InterimTranscript?.Invoke(current);
-
-                    if (EndsSentence(current.Text))
+                    _pendingCaption = current with
                     {
-                        _finalizedCaptions.Writer.TryWrite(current);
+                        UtteranceId = _pendingCaption?.UtteranceId ?? _nextUtteranceId++
+                    };
+                    InterimTranscript?.Invoke(_pendingCaption);
+
+                    if (EndsSentence(_pendingCaption.Text))
+                    {
+                        _finalizedCaptions.Writer.TryWrite(_pendingCaption);
                         lastCommittedKey = currentKey;
-                        pending = null;
+                        _pendingCaption = null;
                     }
                 }
-            }
-            else if (pending is not null &&
-                     !string.Equals(SegmentKey(pending), lastCommittedKey, StringComparison.Ordinal) &&
-                     DateTimeOffset.UtcNow - changedAt >= StableDelay)
-            {
-                _finalizedCaptions.Writer.TryWrite(pending);
-                lastCommittedKey = SegmentKey(pending);
-                pending = null;
             }
 
             await Task.Delay(80, token);
         }
     }
 
-    private async Task ProcessFinalizedAsync(CancellationToken token)
+    private async Task ProcessFinalizedAsync()
     {
-        await foreach (var segment in _finalizedCaptions.Reader.ReadAllAsync(token))
+        await foreach (var segment in _finalizedCaptions.Reader.ReadAllAsync())
         {
             if (FinalTranscript is not null)
                 await FinalTranscript(segment);
@@ -353,18 +355,25 @@ public sealed partial class TeamsCaptionsService : ICaptionCaptureService
             return;
 
         _cancellation.Cancel();
-        _finalizedCaptions.Writer.TryComplete();
 
-        var tasks = new[] { _pollingTask, _processingTask }
-            .Where(task => task is not null)
-            .Cast<Task>();
         try
         {
-            await Task.WhenAll(tasks);
+            if (_pollingTask is not null)
+                await _pollingTask;
         }
         catch (OperationCanceledException)
         {
         }
+
+        if (_pendingCaption is not null)
+        {
+            _finalizedCaptions.Writer.TryWrite(_pendingCaption);
+            _pendingCaption = null;
+        }
+
+        _finalizedCaptions.Writer.TryComplete();
+        if (_processingTask is not null)
+            await _processingTask;
 
         _cancellation.Dispose();
         _cancellation = null;

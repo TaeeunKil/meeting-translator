@@ -16,10 +16,21 @@ public partial class MainWindow : Window
     private readonly TranscriptStore _store = new();
     private readonly AppSettings _settings = AppSettings.Load();
     private readonly MonthlyUsageGuard _usage = new();
+    private readonly object _previewLock = new();
+    private readonly SemaphoreSlim _translationGate = new(1, 1);
+    private InterimTranslationPolicy _interimPolicy = new();
+    private readonly Dictionary<long, int> _rowIndexes = [];
+    private readonly Dictionary<long, string> _rowTranslations = [];
+    private readonly Dictionary<string, string> _translationCache =
+        new(StringComparer.Ordinal);
+    private readonly HashSet<long> _finalizedUtterances = [];
     private ICaptionCaptureService? _capture;
     private ITranslationService? _translator;
     private CancellationTokenSource? _meetingCancellation;
+    private Task? _previewTask;
     private string? _meetingId;
+    private CaptionSegment? _latestInterim;
+    private DateTimeOffset _latestInterimChangedAt;
 
     public MainWindow()
     {
@@ -179,14 +190,26 @@ public partial class MainWindow : Window
             _capture = _settings.CaptionSource == CaptionSourceKind.MicrosoftTeams
                 ? new TeamsCaptionsService()
                 : new WindowsLiveCaptionsService();
-            _capture.InterimTranscript += segment =>
-                Dispatcher.Invoke(() => InterimText.Text = FormatCaption(segment));
+            _capture.InterimTranscript += HandleInterimTranscript;
             _capture.FinalTranscript += HandleFinalTranscriptAsync;
 
             _rows.Clear();
+            lock (_previewLock)
+            {
+                _rowIndexes.Clear();
+                _rowTranslations.Clear();
+                _translationCache.Clear();
+                _finalizedUtterances.Clear();
+                _latestInterim = null;
+                _latestInterimChangedAt = DateTimeOffset.MinValue;
+                _interimPolicy = new InterimTranslationPolicy();
+            }
             EmptyState.Visibility = Visibility.Visible;
 
             await _capture.StartAsync(_meetingCancellation.Token);
+            _previewTask = Task.Run(
+                () => PreviewTranslationLoopAsync(_meetingCancellation.Token),
+                _meetingCancellation.Token);
             ToggleMeeting(true);
         }
         catch (Exception ex)
@@ -242,6 +265,92 @@ public partial class MainWindow : Window
         return true;
     }
 
+    private void HandleInterimTranscript(CaptionSegment caption)
+    {
+        if (string.IsNullOrWhiteSpace(caption.Text))
+            return;
+
+        lock (_previewLock)
+        {
+            _latestInterim = caption;
+            _latestInterimChangedAt = DateTimeOffset.UtcNow;
+        }
+
+        Dispatcher.BeginInvoke(() =>
+        {
+            InterimText.Text = FormatCaption(caption);
+            UpsertRow(
+                caption,
+                TranslationFor(caption.UtteranceId, "번역할 단어를 모으는 중…"));
+        });
+    }
+
+    private async Task PreviewTranslationLoopAsync(CancellationToken token)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(150));
+
+        try
+        {
+            while (await timer.WaitForNextTickAsync(token))
+            {
+                CaptionSegment? caption;
+                DateTimeOffset changedAt;
+                string? candidate;
+
+                lock (_previewLock)
+                {
+                    caption = _latestInterim;
+                    changedAt = _latestInterimChangedAt;
+                    candidate = caption is null ||
+                                _finalizedUtterances.Contains(caption.UtteranceId)
+                        ? null
+                        : _interimPolicy.SelectCandidate(
+                            caption,
+                            _settings.TranslationProvider,
+                            changedAt,
+                            DateTimeOffset.UtcNow);
+                }
+
+                if (caption is null || candidate is null)
+                    continue;
+
+                var translated = await TranslateCaptionAsync(candidate, token);
+                if (translated is null)
+                    continue;
+
+                var shouldDisplay = false;
+                lock (_previewLock)
+                {
+                    shouldDisplay =
+                        !_finalizedUtterances.Contains(caption.UtteranceId) &&
+                        _latestInterim?.UtteranceId == caption.UtteranceId &&
+                        _latestInterim.Text.StartsWith(
+                            candidate,
+                            StringComparison.OrdinalIgnoreCase);
+
+                    if (shouldDisplay)
+                        _rowTranslations[caption.UtteranceId] = translated;
+                }
+
+                if (!shouldDisplay)
+                    continue;
+
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    CaptionSegment latest;
+                    lock (_previewLock)
+                        latest = _latestInterim ?? caption;
+
+                    UpsertRow(latest, translated);
+                    SetRunningStatus();
+                });
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
     private async Task HandleFinalTranscriptAsync(CaptionSegment caption)
     {
         if (_translator is null ||
@@ -249,31 +358,21 @@ public partial class MainWindow : Window
             string.IsNullOrWhiteSpace(caption.Text))
             return;
 
-        var reservedCharacters = 0;
-        var translationCompleted = false;
+        lock (_previewLock)
+        {
+            _finalizedUtterances.Add(caption.UtteranceId);
+            if (_latestInterim?.UtteranceId == caption.UtteranceId)
+                _latestInterim = null;
+        }
 
         try
         {
-            if (_settings.TranslationProvider == TranslationProviderKind.GoogleCloud)
-            {
-                reservedCharacters = MonthlyUsageGuard.CountBillableCharacters(caption.Text);
-                if (!_usage.TryReserve(
-                        reservedCharacters,
-                        _settings.MonthlyCharacterLimit))
-                {
-                    await ShowCloudLimitReachedAsync();
-                    return;
-                }
-
-                await Dispatcher.InvokeAsync(UpdateCloudUsage);
-            }
-
-            var translated = await _translator.TranslateAsync(
+            var translated = await TranslateCaptionAsync(
                 caption.Text,
-                _settings.TargetLanguage,
-                _settings.SourceLanguage,
                 _meetingCancellation?.Token ?? CancellationToken.None);
-            translationCompleted = true;
+            if (translated is null)
+                return;
+
             var entry = await _store.AddAsync(
                 _meetingId,
                 AudioSource.SystemAudio,
@@ -282,19 +381,12 @@ public partial class MainWindow : Window
                 caption.Confidence,
                 caption.SpeakerName);
 
+            lock (_previewLock)
+                _rowTranslations[caption.UtteranceId] = translated;
+
             await Dispatcher.InvokeAsync(() =>
             {
-                var speakerName = string.IsNullOrWhiteSpace(caption.SpeakerName)
-                    ? CaptionSourceLabel(_settings.CaptionSource)
-                    : caption.SpeakerName;
-                _rows.Add(new Row(
-                    entry.Timestamp,
-                    caption.Text,
-                    translated,
-                    ProviderLabel(_settings.TranslationProvider),
-                    speakerName,
-                    SourceInitial(_settings.CaptionSource)));
-                EmptyState.Visibility = Visibility.Collapsed;
+                UpsertRow(caption, translated, entry.Timestamp);
                 InterimText.Text = "다음 문장을 기다리는 중입니다…";
                 SetRunningStatus();
                 Dispatcher.BeginInvoke(
@@ -304,14 +396,9 @@ public partial class MainWindow : Window
         }
         catch (OperationCanceledException)
         {
-            if (!translationCompleted && reservedCharacters > 0)
-                _usage.Release(reservedCharacters);
         }
         catch (Exception ex)
         {
-            if (!translationCompleted && reservedCharacters > 0)
-                _usage.Release(reservedCharacters);
-
             await Dispatcher.InvokeAsync(() =>
             {
                 UpdateCloudUsage();
@@ -323,6 +410,117 @@ public partial class MainWindow : Window
                 InterimText.Text = ex.Message;
             });
         }
+    }
+
+    private async Task<string?> TranslateCaptionAsync(
+        string text,
+        CancellationToken token)
+    {
+        if (_translator is null)
+            return null;
+
+        var cacheKey =
+            $"{_settings.TranslationProvider}\u001f{_settings.SourceLanguage}\u001f" +
+            $"{_settings.TargetLanguage}\u001f{text}";
+
+        await _translationGate.WaitAsync(token);
+        try
+        {
+            lock (_previewLock)
+            {
+                if (_translationCache.TryGetValue(cacheKey, out var cached))
+                    return cached;
+            }
+
+            var reservedCharacters = 0;
+            var translationCompleted = false;
+            try
+            {
+                if (_settings.TranslationProvider == TranslationProviderKind.GoogleCloud)
+                {
+                    reservedCharacters = MonthlyUsageGuard.CountBillableCharacters(text);
+                    if (!_usage.TryReserve(
+                            reservedCharacters,
+                            _settings.MonthlyCharacterLimit))
+                    {
+                        await ShowCloudLimitReachedAsync();
+                        return null;
+                    }
+
+                    await Dispatcher.InvokeAsync(UpdateCloudUsage);
+                }
+
+                var translated = await _translator.TranslateAsync(
+                    text,
+                    _settings.TargetLanguage,
+                    _settings.SourceLanguage,
+                    token);
+                translationCompleted = true;
+
+                lock (_previewLock)
+                    _translationCache[cacheKey] = translated;
+
+                return translated;
+            }
+            catch
+            {
+                if (!translationCompleted && reservedCharacters > 0)
+                {
+                    _usage.Release(reservedCharacters);
+                    await Dispatcher.InvokeAsync(UpdateCloudUsage);
+                }
+
+                throw;
+            }
+        }
+        finally
+        {
+            _translationGate.Release();
+        }
+    }
+
+    private string TranslationFor(long utteranceId, string fallback)
+    {
+        lock (_previewLock)
+            return _rowTranslations.GetValueOrDefault(utteranceId, fallback);
+    }
+
+    private void UpsertRow(
+        CaptionSegment caption,
+        string translated,
+        DateTimeOffset? timestamp = null)
+    {
+        var speakerName = string.IsNullOrWhiteSpace(caption.SpeakerName)
+            ? CaptionSourceLabel(_settings.CaptionSource)
+            : caption.SpeakerName;
+
+        if (_rowIndexes.TryGetValue(caption.UtteranceId, out var index))
+        {
+            var existing = _rows[index];
+            _rows[index] = new Row(
+                timestamp ?? existing.Timestamp,
+                caption.Text,
+                translated,
+                ProviderLabel(_settings.TranslationProvider),
+                speakerName,
+                SourceInitial(_settings.CaptionSource));
+        }
+        else
+        {
+            _rowIndexes[caption.UtteranceId] = _rows.Count;
+            _rows.Add(new Row(
+                timestamp ?? DateTimeOffset.Now,
+                caption.Text,
+                translated,
+                ProviderLabel(_settings.TranslationProvider),
+                speakerName,
+                SourceInitial(_settings.CaptionSource)));
+        }
+
+        EmptyState.Visibility = Visibility.Collapsed;
+        Dispatcher.BeginInvoke(
+            TranscriptScroll.ScrollToEnd,
+            DispatcherPriority.Background);
     }
 
     private async Task ShowCloudLimitReachedAsync()
@@ -354,10 +552,21 @@ public partial class MainWindow : Window
         if (_meetingId is null)
             return;
 
-        _meetingCancellation?.Cancel();
         if (_capture is not null)
             await _capture.DisposeAsync();
         _capture = null;
+        _meetingCancellation?.Cancel();
+        if (_previewTask is not null)
+        {
+            try
+            {
+                await _previewTask;
+            }
+            catch (OperationCanceledException)
+            {
+            }
+        }
+        _previewTask = null;
         _meetingCancellation?.Dispose();
         _meetingCancellation = null;
 
