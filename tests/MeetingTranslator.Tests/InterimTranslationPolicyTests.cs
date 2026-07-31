@@ -86,4 +86,36 @@ public class InterimTranslationPolicyTests
             "Terry, hi everyone",
             "The quarterly numbers"));
     }
+
+    [Fact]
+    public void ProcessCaptionUpdate_KeepsProvisionalPeriodsInOneUtterance()
+    {
+        var service = new WindowsLiveCaptionsService();
+        var updates = new List<CaptionSegment>();
+        service.InterimTranscript += updates.Add;
+
+        service.ProcessCaptionUpdate("This is.");
+        service.ProcessCaptionUpdate("This is Grand Theft.");
+        service.ProcessCaptionUpdate("This is Grand Theft Auto Three and this.");
+
+        Assert.Equal(3, updates.Count);
+        Assert.Single(updates.Select(update => update.UtteranceId).Distinct());
+        Assert.Equal(
+            "This is Grand Theft Auto Three and this.",
+            updates[^1].Text);
+    }
+
+    [Fact]
+    public void ProcessCaptionUpdate_StartsANewUtteranceForUnrelatedText()
+    {
+        var service = new WindowsLiveCaptionsService();
+        var updates = new List<CaptionSegment>();
+        service.InterimTranscript += updates.Add;
+
+        service.ProcessCaptionUpdate("This is Grand Theft Auto Three.");
+        service.ProcessCaptionUpdate("The next topic is different.");
+
+        Assert.Equal(2, updates.Count);
+        Assert.NotEqual(updates[0].UtteranceId, updates[1].UtteranceId);
+    }
 }

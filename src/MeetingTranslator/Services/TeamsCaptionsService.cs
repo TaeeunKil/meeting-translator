@@ -112,13 +112,6 @@ public sealed partial class TeamsCaptionsService : ICaptionCaptureService
                         UtteranceId = _pendingCaption?.UtteranceId ?? _nextUtteranceId++
                     };
                     InterimTranscript?.Invoke(_pendingCaption);
-
-                    if (EndsSentence(_pendingCaption.Text))
-                    {
-                        _finalizedCaptions.Writer.TryWrite(_pendingCaption);
-                        lastCommittedKey = currentKey;
-                        _pendingCaption = null;
-                    }
                 }
             }
 

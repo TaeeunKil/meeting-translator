@@ -82,7 +82,7 @@ public sealed partial class WindowsLiveCaptionsService : ICaptionCaptureService
         }
     }
 
-    private void ProcessCaptionUpdate(string latestCaption)
+    internal void ProcessCaptionUpdate(string latestCaption)
     {
         if (_pendingCaption is null)
         {
@@ -99,12 +99,6 @@ public sealed partial class WindowsLiveCaptionsService : ICaptionCaptureService
         }
 
         InterimTranscript?.Invoke(_pendingCaption);
-
-        if (EndsSentence(_pendingCaption.Text))
-        {
-            QueueFinal(_pendingCaption);
-            _pendingCaption = null;
-        }
     }
 
     private CaptionSegment NewSegment(string text) =>
