@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
 using System.Windows.Threading;
 using MeetingTranslator.Models;
 using MeetingTranslator.Services;
@@ -12,14 +13,14 @@ namespace MeetingTranslator;
 
 public partial class MainWindow : Window
 {
-    private readonly ObservableCollection<Row> _rows = [];
+    private readonly ObservableCollection<SpeakerGroup> _groups = [];
     private readonly TranscriptStore _store = new();
     private readonly AppSettings _settings = AppSettings.Load();
     private readonly MonthlyUsageGuard _usage = new();
     private readonly object _previewLock = new();
     private readonly SemaphoreSlim _translationGate = new(1, 1);
     private InterimTranslationPolicy _interimPolicy = new();
-    private readonly Dictionary<long, int> _rowIndexes = [];
+    private readonly Dictionary<long, RowLocation> _rowLocations = [];
     private readonly Dictionary<long, string> _rowTranslations = [];
     private readonly Dictionary<string, string> _translationCache =
         new(StringComparer.Ordinal);
@@ -31,11 +32,12 @@ public partial class MainWindow : Window
     private string? _meetingId;
     private CaptionSegment? _latestInterim;
     private DateTimeOffset _latestInterimChangedAt;
+    private bool _sidebarOpen = true;
 
     public MainWindow()
     {
         InitializeComponent();
-        TranscriptList.ItemsSource = _rows;
+        TranscriptList.ItemsSource = _groups;
 
         ProjectIdBox.Text = _settings.ProjectId;
         CredentialsBox.Text = _settings.CredentialsPath;
@@ -193,10 +195,10 @@ public partial class MainWindow : Window
             _capture.InterimTranscript += HandleInterimTranscript;
             _capture.FinalTranscript += HandleFinalTranscriptAsync;
 
-            _rows.Clear();
+            _groups.Clear();
             lock (_previewLock)
             {
-                _rowIndexes.Clear();
+                _rowLocations.Clear();
                 _rowTranslations.Clear();
                 _translationCache.Clear();
                 _finalizedUtterances.Clear();
@@ -494,10 +496,10 @@ public partial class MainWindow : Window
             ? CaptionSourceLabel(_settings.CaptionSource)
             : caption.SpeakerName;
 
-        if (_rowIndexes.TryGetValue(caption.UtteranceId, out var index))
+        if (_rowLocations.TryGetValue(caption.UtteranceId, out var location))
         {
-            var existing = _rows[index];
-            _rows[index] = new Row(
+            var existing = location.Group.Lines[location.Index];
+            location.Group.Lines[location.Index] = new Row(
                 timestamp ?? existing.Timestamp,
                 caption.Text,
                 translated,
@@ -507,20 +509,73 @@ public partial class MainWindow : Window
         }
         else
         {
-            _rowIndexes[caption.UtteranceId] = _rows.Count;
-            _rows.Add(new Row(
+            var group = _groups.LastOrDefault();
+            if (group is null ||
+                !string.Equals(group.SpeakerName, speakerName, StringComparison.Ordinal) ||
+                !string.Equals(
+                    group.SourceInitial,
+                    SourceInitial(_settings.CaptionSource),
+                    StringComparison.Ordinal))
+            {
+                group = new SpeakerGroup(
+                    speakerName,
+                    SourceInitial(_settings.CaptionSource),
+                    timestamp ?? DateTimeOffset.Now);
+                _groups.Add(group);
+            }
+
+            var index = group.Lines.Count;
+            group.Lines.Add(new Row(
                 timestamp ?? DateTimeOffset.Now,
                 caption.Text,
                 translated,
                 ProviderLabel(_settings.TranslationProvider),
                 speakerName,
                 SourceInitial(_settings.CaptionSource)));
+            _rowLocations[caption.UtteranceId] = new RowLocation(group, index);
         }
 
         EmptyState.Visibility = Visibility.Collapsed;
         Dispatcher.BeginInvoke(
             TranscriptScroll.ScrollToEnd,
             DispatcherPriority.Background);
+    }
+
+    private void ToggleSidebar_Click(object sender, RoutedEventArgs e)
+    {
+        SidebarToggleButton.IsEnabled = false;
+
+        if (_sidebarOpen)
+        {
+            var fadeOut = new DoubleAnimation(
+                1,
+                0,
+                TimeSpan.FromMilliseconds(130));
+            fadeOut.Completed += (_, _) =>
+            {
+                SettingsSidebar.Visibility = Visibility.Collapsed;
+                SettingsColumn.Width = new GridLength(0);
+                SidebarToggleButton.Content = "설정";
+                SidebarToggleButton.IsEnabled = true;
+            };
+            SettingsSidebar.BeginAnimation(OpacityProperty, fadeOut);
+        }
+        else
+        {
+            SettingsColumn.Width = new GridLength(324);
+            SettingsSidebar.Visibility = Visibility.Visible;
+            SettingsSidebar.Opacity = 0;
+            SettingsSidebar.BeginAnimation(
+                OpacityProperty,
+                new DoubleAnimation(
+                    0,
+                    1,
+                    TimeSpan.FromMilliseconds(150)));
+            SidebarToggleButton.Content = "‹ 설정";
+            SidebarToggleButton.IsEnabled = true;
+        }
+
+        _sidebarOpen = !_sidebarOpen;
     }
 
     private async Task ShowCloudLimitReachedAsync()
@@ -677,4 +732,17 @@ public partial class MainWindow : Window
         string ProviderLabel,
         string SpeakerName,
         string SourceInitial);
+
+    public sealed class SpeakerGroup(
+        string speakerName,
+        string sourceInitial,
+        DateTimeOffset startedAt)
+    {
+        public string SpeakerName { get; } = speakerName;
+        public string SourceInitial { get; } = sourceInitial;
+        public DateTimeOffset StartedAt { get; } = startedAt;
+        public ObservableCollection<Row> Lines { get; } = [];
+    }
+
+    private sealed record RowLocation(SpeakerGroup Group, int Index);
 }
