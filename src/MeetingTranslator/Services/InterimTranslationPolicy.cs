@@ -44,7 +44,9 @@ internal sealed partial class InterimTranslationPolicy
         var previousWordCount = WordCount(_lastRequestedText);
         var newWordCount = Math.Max(0, candidateWordCount - previousWordCount);
 
-        if (!isIdle && newWordCount < cadence.NewWordsPerRequest)
+        var revisesEarlierWords = _lastRequestedText.Length > 0 &&
+            !candidate.StartsWith(_lastRequestedText, StringComparison.OrdinalIgnoreCase);
+        if (!isIdle && !revisesEarlierWords && newWordCount < cadence.NewWordsPerRequest)
             return null;
 
         _lastRequestedText = candidate;
@@ -56,10 +58,18 @@ internal sealed partial class InterimTranslationPolicy
         long utteranceId,
         string translatedSource,
         CaptionSegment? latest,
-        IReadOnlySet<long> finalized) =>
+        IReadOnlySet<long> finalized,
+        bool allowRevisedSource = false) =>
         latest is not null && latest.UtteranceId == utteranceId &&
         !finalized.Contains(utteranceId) &&
-        latest.Text.StartsWith(translatedSource, StringComparison.OrdinalIgnoreCase);
+        (allowRevisedSource || latest.Text.StartsWith(translatedSource, StringComparison.OrdinalIgnoreCase));
+
+    internal void RetryFailedRequest(long utteranceId, string candidate)
+    {
+        if (_utteranceId == utteranceId && _lastRequestedText == candidate)
+            _lastRequestedText = string.Empty;
+        // Retain the request timestamp so retries still respect provider cadence.
+    }
 
     internal static string CompletedWords(string text)
     {

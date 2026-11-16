@@ -21,7 +21,7 @@ public partial class MainWindow : Window
     private readonly SemaphoreSlim _translationGate = new(1, 1);
     private InterimTranslationPolicy _interimPolicy = new();
     private readonly Dictionary<long, RowLocation> _rowLocations = [];
-    private readonly Dictionary<long, string> _rowTranslations = [];
+    private readonly LiveTranslationCache _rowTranslations = new();
     private readonly Dictionary<string, string> _translationCache =
         new(StringComparer.Ordinal);
     private readonly HashSet<long> _finalizedUtterances = [];
@@ -287,8 +287,7 @@ public partial class MainWindow : Window
         lock (_previewLock)
         {
             if (_removedUtterances.Contains(caption.UtteranceId)) return;
-            if (_latestInterim?.UtteranceId != caption.UtteranceId || _latestInterim.Text != caption.Text)
-                _rowTranslations.Remove(caption.UtteranceId);
+            _rowTranslations.Observe(caption);
             _finalizedUtterances.Remove(caption.UtteranceId);
             _latestInterim = caption;
             _latestInterimChangedAt = DateTimeOffset.UtcNow;
@@ -342,7 +341,24 @@ public partial class MainWindow : Window
                 if (caption is null || candidate is null)
                     continue;
 
-                var translated = await TranslateCaptionAsync(candidate, token);
+                string? translated;
+                try
+                {
+                    translated = await TranslateCaptionAsync(candidate, token);
+                }
+                catch (OperationCanceledException) when (token.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception)
+                {
+                    // A network timeout must not terminate live translation.
+                    lock (_previewLock)
+                        _interimPolicy.RetryFailedRequest(caption.UtteranceId, candidate);
+                    await Dispatcher.InvokeAsync(() => StatusText.Text = "번역 재시도 중 · 이전 번역을 유지합니다.");
+                    await Task.Delay(1500, token);
+                    continue;
+                }
                 if (translated is null)
                     continue;
 
@@ -355,11 +371,11 @@ public partial class MainWindow : Window
                         // while this dispatcher callback is waiting to run.
                         if (!InterimTranslationPolicy.CanApplyTranslation(
                                 caption.UtteranceId, candidate,
-                                _latestInterim, _finalizedUtterances))
+                                _latestInterim, _finalizedUtterances, allowRevisedSource: true))
                             return;
 
                         latest = _latestInterim!;
-                        _rowTranslations[caption.UtteranceId] = translated;
+                        _rowTranslations.SetTranslation(caption, translated);
                     }
 
                     UpsertRow(latest, translated);
@@ -411,7 +427,7 @@ public partial class MainWindow : Window
                 caption.UtteranceId);
 
             lock (_previewLock)
-                _rowTranslations[caption.UtteranceId] = translated;
+                _rowTranslations.SetTranslation(caption, translated);
 
             await Dispatcher.InvokeAsync(() =>
             {
@@ -514,7 +530,7 @@ public partial class MainWindow : Window
     private string TranslationFor(long utteranceId, string fallback)
     {
         lock (_previewLock)
-            return _rowTranslations.GetValueOrDefault(utteranceId, fallback);
+            return _rowTranslations.GetText(utteranceId, fallback);
     }
 
     private void UpsertRow(
@@ -526,6 +542,12 @@ public partial class MainWindow : Window
             ? CaptionSourceLabel(_settings.CaptionSource)
             : caption.SpeakerName;
 
+        var providerLabel = ProviderLabel(_settings.TranslationProvider);
+        lock (_previewLock)
+            if (!_finalizedUtterances.Contains(caption.UtteranceId) &&
+                _rowTranslations.GetText(caption.UtteranceId, "").Length > 0)
+                providerLabel += " · 임시 번역";
+
         if (_rowLocations.TryGetValue(caption.UtteranceId, out var location))
         {
             var existing = location.Group.Lines[location.Index];
@@ -533,7 +555,7 @@ public partial class MainWindow : Window
                 timestamp ?? existing.Timestamp,
                 caption.Text,
                 translated,
-                ProviderLabel(_settings.TranslationProvider),
+                providerLabel,
                 speakerName,
                 SourceInitial(_settings.CaptionSource));
         }
@@ -559,7 +581,7 @@ public partial class MainWindow : Window
                 timestamp ?? DateTimeOffset.Now,
                 caption.Text,
                 translated,
-                ProviderLabel(_settings.TranslationProvider),
+                providerLabel,
                 speakerName,
                 SourceInitial(_settings.CaptionSource)));
             _rowLocations[caption.UtteranceId] = new RowLocation(group, index);
