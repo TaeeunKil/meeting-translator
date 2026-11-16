@@ -25,6 +25,7 @@ public sealed partial class WindowsLiveCaptionsService : ICaptionCaptureService
     private AutomationElement? _captionsTextBlock;
     private CaptionSegment? _pendingCaption;
     private long _nextUtteranceId = 1;
+    private readonly CaptionSnapshotTracker _snapshotTracker = new();
 
     public event Func<CaptionSegment, Task>? FinalTranscript;
     public event Action<CaptionSegment>? InterimTranscript;
@@ -73,12 +74,23 @@ public sealed partial class WindowsLiveCaptionsService : ICaptionCaptureService
             if (!string.Equals(fullText, lastRawText, StringComparison.Ordinal))
             {
                 lastRawText = fullText;
-                var latestCaption = ExtractLatestCaption(fullText);
-                if (!string.IsNullOrWhiteSpace(latestCaption))
-                    ProcessCaptionUpdate(latestCaption);
+                ProcessCaptionSnapshot(fullText);
             }
 
             await Task.Delay(40, token);
+        }
+    }
+
+    internal void ProcessCaptionSnapshot(string fullText)
+    {
+        foreach (var update in _snapshotTracker.Accept(fullText))
+        {
+            if (update.Segment.IsRemoved)
+                InterimTranscript?.Invoke(update.Segment);
+            if (update.Final)
+                QueueFinal(update.Segment);
+            else
+                InterimTranscript?.Invoke(update.Segment);
         }
     }
 
@@ -277,6 +289,10 @@ public sealed partial class WindowsLiveCaptionsService : ICaptionCaptureService
         catch (OperationCanceledException)
         {
         }
+
+        var lastSnapshot = _snapshotTracker.Flush();
+        if (lastSnapshot is not null)
+            QueueFinal(lastSnapshot);
 
         if (_pendingCaption is not null)
         {

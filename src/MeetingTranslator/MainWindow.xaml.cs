@@ -25,6 +25,7 @@ public partial class MainWindow : Window
     private readonly Dictionary<string, string> _translationCache =
         new(StringComparer.Ordinal);
     private readonly HashSet<long> _finalizedUtterances = [];
+    private readonly HashSet<long> _removedUtterances = [];
     private ICaptionCaptureService? _capture;
     private ITranslationService? _translator;
     private CancellationTokenSource? _meetingCancellation;
@@ -202,6 +203,7 @@ public partial class MainWindow : Window
                 _rowTranslations.Clear();
                 _translationCache.Clear();
                 _finalizedUtterances.Clear();
+                _removedUtterances.Clear();
                 _latestInterim = null;
                 _latestInterimChangedAt = DateTimeOffset.MinValue;
                 _interimPolicy = new InterimTranslationPolicy();
@@ -269,22 +271,46 @@ public partial class MainWindow : Window
 
     private void HandleInterimTranscript(CaptionSegment caption)
     {
-        if (string.IsNullOrWhiteSpace(caption.Text))
+        if (caption.IsRemoved)
+        {
+            lock (_previewLock)
+            {
+                _removedUtterances.Add(caption.UtteranceId);
+                _finalizedUtterances.Add(caption.UtteranceId);
+                _rowTranslations.Remove(caption.UtteranceId);
+                if (_latestInterim?.UtteranceId == caption.UtteranceId) _latestInterim = null;
+            }
+            Dispatcher.BeginInvoke(() => RemoveRow(caption.UtteranceId));
             return;
-
+        }
+        if (string.IsNullOrWhiteSpace(caption.Text)) return;
         lock (_previewLock)
         {
+            if (_removedUtterances.Contains(caption.UtteranceId)) return;
+            if (_latestInterim?.UtteranceId != caption.UtteranceId || _latestInterim.Text != caption.Text)
+                _rowTranslations.Remove(caption.UtteranceId);
+            _finalizedUtterances.Remove(caption.UtteranceId);
             _latestInterim = caption;
             _latestInterimChangedAt = DateTimeOffset.UtcNow;
         }
-
         Dispatcher.BeginInvoke(() =>
         {
+            lock (_previewLock)
+                if (_removedUtterances.Contains(caption.UtteranceId) ||
+                    (_latestInterim?.UtteranceId == caption.UtteranceId && _latestInterim.Text != caption.Text)) return;
             InterimText.Text = FormatCaption(caption);
-            UpsertRow(
-                caption,
-                TranslationFor(caption.UtteranceId, "번역할 단어를 모으는 중…"));
+            UpsertRow(caption, TranslationFor(caption.UtteranceId, "번역할 단어를 모으는 중…"));
         });
+    }
+
+    private void RemoveRow(long utteranceId)
+    {
+        if (!_rowLocations.Remove(utteranceId, out var location)) return;
+        location.Group.Lines.RemoveAt(location.Index);
+        foreach (var pair in _rowLocations.ToArray())
+            if (ReferenceEquals(pair.Value.Group, location.Group) && pair.Value.Index > location.Index)
+                _rowLocations[pair.Key] = pair.Value with {Index = pair.Value.Index - 1};
+        if (location.Group.Lines.Count == 0) _groups.Remove(location.Group);
     }
 
     private async Task PreviewTranslationLoopAsync(CancellationToken token)
@@ -348,6 +374,11 @@ public partial class MainWindow : Window
 
     private async Task HandleFinalTranscriptAsync(CaptionSegment caption)
     {
+        if (caption.IsRemoved)
+        {
+            if (_meetingId is not null) await _store.DeleteUtteranceAsync(_meetingId, caption.UtteranceId);
+            return;
+        }
         if (_translator is null ||
             _meetingId is null ||
             string.IsNullOrWhiteSpace(caption.Text))
@@ -355,6 +386,8 @@ public partial class MainWindow : Window
 
         lock (_previewLock)
         {
+            if (_removedUtterances.Contains(caption.UtteranceId) ||
+                (_latestInterim?.UtteranceId == caption.UtteranceId && _latestInterim.Text != caption.Text)) return;
             _finalizedUtterances.Add(caption.UtteranceId);
             if (_latestInterim?.UtteranceId == caption.UtteranceId)
                 _latestInterim = null;
@@ -374,13 +407,17 @@ public partial class MainWindow : Window
                 caption.Text,
                 translated,
                 caption.Confidence,
-                caption.SpeakerName);
+                caption.SpeakerName,
+                caption.UtteranceId);
 
             lock (_previewLock)
                 _rowTranslations[caption.UtteranceId] = translated;
 
             await Dispatcher.InvokeAsync(() =>
             {
+                lock (_previewLock)
+                    if (_removedUtterances.Contains(caption.UtteranceId) ||
+                        (_latestInterim?.UtteranceId == caption.UtteranceId && _latestInterim.Text != caption.Text)) return;
                 UpsertRow(caption, translated, entry.Timestamp);
                 InterimText.Text = "다음 문장을 기다리는 중입니다…";
                 SetRunningStatus();
