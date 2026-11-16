@@ -320,28 +320,21 @@ public partial class MainWindow : Window
                 if (translated is null)
                     continue;
 
-                var shouldDisplay = false;
-                lock (_previewLock)
-                {
-                    shouldDisplay =
-                        !_finalizedUtterances.Contains(caption.UtteranceId) &&
-                        _latestInterim?.UtteranceId == caption.UtteranceId &&
-                        _latestInterim.Text.StartsWith(
-                            candidate,
-                            StringComparison.OrdinalIgnoreCase);
-
-                    if (shouldDisplay)
-                        _rowTranslations[caption.UtteranceId] = translated;
-                }
-
-                if (!shouldDisplay)
-                    continue;
-
                 await Dispatcher.InvokeAsync(() =>
                 {
                     CaptionSegment latest;
                     lock (_previewLock)
-                        latest = _latestInterim ?? caption;
+                    {
+                        // Recheck on the UI thread: another caption can arrive
+                        // while this dispatcher callback is waiting to run.
+                        if (!InterimTranslationPolicy.CanApplyTranslation(
+                                caption.UtteranceId, candidate,
+                                _latestInterim, _finalizedUtterances))
+                            return;
+
+                        latest = _latestInterim!;
+                        _rowTranslations[caption.UtteranceId] = translated;
+                    }
 
                     UpsertRow(latest, translated);
                     SetRunningStatus();

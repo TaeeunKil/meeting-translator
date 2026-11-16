@@ -52,6 +52,15 @@ internal sealed partial class InterimTranslationPolicy
         return candidate;
     }
 
+    internal static bool CanApplyTranslation(
+        long utteranceId,
+        string translatedSource,
+        CaptionSegment? latest,
+        IReadOnlySet<long> finalized) =>
+        latest is not null && latest.UtteranceId == utteranceId &&
+        !finalized.Contains(utteranceId) &&
+        latest.Text.StartsWith(translatedSource, StringComparison.OrdinalIgnoreCase);
+
     internal static string CompletedWords(string text)
     {
         var normalized = Normalize(text);
